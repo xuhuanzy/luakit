@@ -432,7 +432,6 @@ end
 ---@class Class.DeclareOptions
 ---@field enableGetterAndSetter? boolean 启用 get 和 set 方法.
 ---@field super? string|Object|Class.DeclareOptions 父类的名称或定义表. 需要在初始化时显式调用父类初始化方法进行初始化.
----@field enableSuperChaining? boolean 为父类启用元表链继承. 启用后父类的静态成员不再是复制到子类, 而是通过元表链查找. 降低性能但减少内存占用.
 ---@field extends? {[integer]: string|Object} 扩展的类名或定义表集合, 例如: `extends = { 'A', B }`. 也可以使用更具体的 {@link ClassControl.extends}.
 
 -- 定义一个类. <br>
@@ -485,24 +484,7 @@ function ClassControl.declare(name, superOrOptions)
                 _errorHandler(('class %q can not inherit itself'):format(name))
             end
             metadata.superClass = superClass
-            if options.enableSuperChaining then
-                -- 设置元表以实现静态成员继承
-                setmetatable(class, { __index = superClass })
-
-                createExtendsTables(metadata)
-                metadata.extendsMap[superClass.__name] = true
-
-                -- 将父类添加到初始化调用链中
-                ---@type Class.Metadata.ExtendInitData
-                local initData = {
-                    name = superClass.__name,
-                    isSuper = true,
-                }
-                tableInsert(metadata.extendsInitDatas, initData)
-            else
-                -- 保持原有的字段复制逻辑
-                metadata:extends(superClass.__name)
-            end
+            metadata:extends(superClass.__name)
         else
             _errorHandler(('super class %q not found'):format(options.super))
         end
