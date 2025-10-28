@@ -23,16 +23,12 @@ local ClassControl = {}
 ---@type table<string, Class.Definition>
 local _classMap = {}
 
----为已有构造函数创建的类型别名
----@type table<string, function>
-local _aliasMap = {}
-
 ---@type table<string, Class.Metadata>
 local _classConfigMap = {}
 
 ---@class Class.Definition
 ---@field public  __init?     fun(self: any, ...) 构造函数
----@field public  __del?      fun(self: any) 析构函数
+---@field public  __del?      fun(self: any) 主动删除时调用的析构函数. gc 时并不会自动调用该函数.
 ---@field package __call      fun(self: any, ...): any 调用函数
 ---@field package __name      string 类名
 ---@field package __getter    table<string, fun(self: any): any> 所有获取器
@@ -414,14 +410,6 @@ function ClassControl.new(name, ...)
     name = name.__name or name ---@cast name -table
     local class = _classMap[name]
     if not class then
-        local aliasCreator = _aliasMap[name]
-        if aliasCreator then
-            return function(...)
-                local instance = aliasCreator(...)
-                instance.__class__ = name
-                return instance
-            end
-        end
         _errorHandler(('class %q not found'):format(name))
     end
 
@@ -444,7 +432,9 @@ end
 ---@return Class.Metadata
 function ClassControl.declare(name, superOrOptions)
     local metadata = getMetadata(name)
-    if _classMap[name] then -- 如果已声明, 则返回已声明的类和配置
+    -- 如果已声明, 则返回已声明的类和配置.
+    -- 这会导致热重载时仍持有旧的类和配置, 但重声明方法在绝大多数的情况下已经足够使用, 而完全修改的代价过于巨大.
+    if _classMap[name] then
         return _classMap[name], metadata
     end
 
@@ -498,13 +488,6 @@ function ClassControl.declare(name, superOrOptions)
     end
 
     return class, metadata
-end
-
----为非`Class.declare`声明的类创建类型别名, 使其可以被`Class.new`实例化.
----@param name string 类型别名
----@param creator function 构造函数, 该函数没有`self`参数, 且必须返回一个实例.
-function ClassControl.alias(name, creator)
-    _aliasMap[name] = creator
 end
 
 ---析构一个实例
@@ -574,9 +557,9 @@ do
         return chain
     end
 
-    ---判断一个实例是否属于目标类.
-    ---@param obj Object 要判断的实例
-    ---@param targetName string|Object 目标类名或目标类对象
+    --- 检查对象是否为指定类或其子类的实例.
+    ---@param obj Object 要判断的实例.
+    ---@param targetName string|Object 目标类名或目标类对象. 可以是类名或类对象.
     ---@return boolean
     function ClassControl.instanceof(obj, targetName)
         if type(obj) ~= 'table' or (not obj.__class__) then
