@@ -20,13 +20,13 @@ local debugGetInfo = debug.getinfo
 local ClassControl = {}
 
 ---记录了所有已声明的类
----@type table<string, Class.Definition>
+---@type table<string, Class.Type>
 local _classMap = {}
 
----@type table<string, Class.Metadata>
-local _classConfigMap = {}
+---@type table<string, Class.Registry>
+local _classRegistryMap = {}
 
----@class Class.Definition
+---@class Class.Type
 ---@field public  __init?     fun(self: any, ...) 构造函数
 ---@field public  __del?      fun(self: any) 主动删除时调用的析构函数. gc 时并不会自动调用该函数.
 ---@field package __call      fun(self: any, ...): any 调用函数
@@ -37,30 +37,30 @@ local _classConfigMap = {}
 ---@field package __newindex  any
 
 
----@class Class.Metadata.ExtendInitData
+---@class Class.Registry.ExtendInitData
 ---@field name string
 ---@field isSuper? boolean 是否是父类. 默认为 false.
----@field initControl? fun(self: any, super: (fun(...): Class.Definition), ...) 初始化控制函数
+---@field initControl? fun(self: any, super: (fun(...): Class.Type), ...) 初始化控制函数
 ---@field executor? fun(self: any, ...: any) 初始化执行器
 
----@class Class.Metadata
+---@class Class.Registry
 ---@field private name         string 类名
 ---@field package extendsMap   table<string, boolean> 记录了该类扩展的类(包含父类)
----@field package extendsInitDatas Class.Metadata.ExtendInitData[] 记录了所有扩展的类的初始化信息
+---@field package extendsInitDatas Class.Registry.ExtendInitData[] 记录了所有扩展的类的初始化信息
 ---@field package extendsKeys  table<string, boolean> 记录该类已继承的所有字段
----@field package superClass?  Class.Definition 记录了父类. 父类是唯一的, 但可以存在多个扩展类(包含了父类). 如果父类有构造函数, 则必须由子类显式调用.
+---@field package super?  Class.Type 记录了父类. 父类是唯一的, 但可以存在多个扩展类(包含了父类). 如果父类有构造函数, 则必须由子类显式调用.
 ---@field package initCalls?   false|fun(...)[] 初始化函数调用链, 如果为`false`则表示无需初始化, 为`nil`则表示还未计算
 ---@field package circularCheckDone? boolean 是否已完成循环继承检查
-local ClassMetadata = {}
+local ClassRegistry = {}
 
----获取指定类的元数据, 不存在则创建.
+---获取指定类的注册表, 不存在则创建.
 ---@param name string
----@return Class.Metadata
-local function getMetadata(name)
-    local config = _classConfigMap[name]
+---@return Class.Registry
+local function getRegistry(name)
+    local config = _classRegistryMap[name]
     if not config then
-        config = setmetatable({ name = name }, { __index = ClassMetadata })
-        _classConfigMap[name] = config
+        config = setmetatable({ name = name }, { __index = ClassRegistry })
+        _classRegistryMap[name] = config
     end
     return config
 end
@@ -68,7 +68,7 @@ end
 ---检查循环继承(仅检查一次并缓存结果)
 ---@package
 ---@param visited? table<string, boolean> 已访问的类名
-function ClassMetadata:checkCircularInheritance(visited)
+function ClassRegistry:checkCircularInheritance(visited)
     if self.circularCheckDone then
         return
     end
@@ -83,7 +83,7 @@ function ClassMetadata:checkCircularInheritance(visited)
     -- 递归检查所有扩展的类
     if self.extendsInitDatas then
         for _, initData in ipairs(self.extendsInitDatas) do
-            local parentConfig = getMetadata(initData.name)
+            local parentConfig = getRegistry(initData.name)
             parentConfig:checkCircularInheritance(visited)
         end
     end
@@ -93,7 +93,7 @@ function ClassMetadata:checkCircularInheritance(visited)
 end
 
 -- 创建扩展相关的表
----@param self Class.Metadata
+---@param self Class.Registry
 local function createExtendsTables(self)
     if not self.extendsMap then
         self.extendsMap = {}
@@ -104,14 +104,13 @@ end
 
 ---清除当前类的缓存(在扩展关系变化时调用)
 ---@private
-function ClassMetadata:clearCache()
+function ClassRegistry:clearCache()
     self.circularCheckDone = false
     self.initCalls = nil
-    ClassMetadata.increaseInheritanceVersion()
 end
 
 ---启用 getter 和 setter 方法.
----@param class Class.Definition 类
+---@param class Class.Type 类
 local function enableGetterAndSetter(class)
     if class.__getter then
         return
@@ -143,9 +142,9 @@ end
 
 
 ---复制父类字段到子类. 将跳过双下划线开头的元方法与一些特殊字段.
----@param childClass Class.Definition 子类
----@param childMetadata Class.Metadata 子类配置
----@param parentClass Class.Definition 父类
+---@param childClass Class.Type 子类
+---@param childMetadata Class.Registry 子类配置
+---@param parentClass Class.Type 父类
 ---@param parentName string 父类名称
 local function copyInheritedMembers(childClass, childMetadata, parentClass, parentName)
     local childExtendsKeys = childMetadata.extendsKeys
@@ -190,7 +189,7 @@ end
 ---@generic Extends
 ---@param extendName `Extends` 扩展名称
 ---@param extendsInit? fun(self: self, super: Extends) 扩展初始化控制函数. 第二个参数是扩展初始化包装函数, 调用后将执行扩展类的初始化函数, 然后返回扩展类的配置.
-function ClassMetadata:extends(extendName, extendsInit)
+function ClassRegistry:extends(extendName, extendsInit)
     local currentClass = _classMap[self.name]
     local extendClass = _classMap[extendName]
 
@@ -204,7 +203,7 @@ function ClassMetadata:extends(extendName, extendsInit)
         _errorHandler('extendsInit must be nil or function')
     end
 
-    local isSuper = self.superClass and self.superClass.__name == extendName
+    local isSuper = self.super and self.super.__name == extendName
 
     -- 延迟创建扩展相关的表
     createExtendsTables(self)
@@ -222,7 +221,7 @@ function ClassMetadata:extends(extendName, extendsInit)
 
     -- 记录父类的初始化方法
     do
-        local existing ---@type Class.Metadata.ExtendInitData?
+        local existing ---@type Class.Registry.ExtendInitData?
         for i = 1, #self.extendsInitDatas do
             local initData = self.extendsInitDatas[i]
             if initData.name == extendName then
@@ -248,7 +247,7 @@ function ClassMetadata:extends(extendName, extendsInit)
                 needClearCache = true
             end
         else
-            ---@type Class.Metadata.ExtendInitData
+            ---@type Class.Registry.ExtendInitData
             local initData = {
                 initControl = extendsInit,
                 name = extendName,
@@ -273,7 +272,7 @@ function ClassMetadata:extends(extendName, extendsInit)
         end
 
         -- 父类的初始化函数必须由子类显式调用
-        if self.superClass and self.superClass.__name == extendName then
+        if self.super and self.super.__name == extendName then
             return
         end
 
@@ -293,7 +292,7 @@ end
 ---@param className string 类名
 ---@param ... any 构造函数参数
 local function runInit(obj, className, ...)
-    local classConfig = getMetadata(className)
+    local classConfig = getRegistry(className)
     local initCalls = classConfig.initCalls
 
     -- 如果已确定无需初始化, 直接返回
@@ -318,7 +317,7 @@ local function runInit(obj, className, ...)
             seen[currentClassName] = true
 
             local currentClass = _classMap[currentClassName]
-            local currentConfig = getMetadata(currentClassName)
+            local currentConfig = getRegistry(currentClassName)
 
             -- 先收集扩展类的初始化控制函数, 如果存在控制函数, 那么将由控制函数主导目标扩展类的初始化流程,
             -- 否则直接调用扩展类的初始化函数`__init`
@@ -386,7 +385,7 @@ local function runDel(obj, className)
         return
     end
 
-    local classConfig = getMetadata(className)
+    local classConfig = getRegistry(className)
 
     -- 先析构所有扩展的类
     if classConfig.extendsInitDatas then
@@ -429,13 +428,13 @@ end
 ---@param name `T` 类名
 ---@param superOrOptions? `Super` | Object | Class.DeclareOptions 类的声明选项, 当提供字符串或定义表时默认为`super`
 ---@return T
----@return Class.Metadata
+---@return Class.Registry
 function ClassControl.declare(name, superOrOptions)
-    local metadata = getMetadata(name)
+    local registry = getRegistry(name)
     -- 如果已声明, 则返回已声明的类和配置.
     -- 这会导致热重载时仍持有旧的类和配置, 但重声明方法在绝大多数的情况下已经足够使用, 而完全修改的代价过于巨大.
     if _classMap[name] then
-        return _classMap[name], metadata
+        return _classMap[name], registry
     end
 
     local options = superOrOptions or {}
@@ -447,7 +446,7 @@ function ClassControl.declare(name, superOrOptions)
     end
     ---@cast options Class.DeclareOptions
 
-    ---@class (constructor) Class.Definition
+    ---@class (constructor) Class.Type
     local class = {
         __name = name,
         ---@package
@@ -467,14 +466,14 @@ function ClassControl.declare(name, superOrOptions)
 
     -- 设置父类
     if options.super then
-        local superClass = _classMap[options.super]
+        local super = _classMap[options.super]
             or _classMap[ --[[@cast options.super Object ]] options.super.__name ]
-        if superClass then
-            if class == superClass then
+        if super then
+            if class == super then
                 _errorHandler(('class %q can not inherit itself'):format(name))
             end
-            metadata.superClass = superClass
-            metadata:extends(superClass.__name)
+            registry.super = super
+            registry:extends(super.__name)
         else
             _errorHandler(('super class %q not found'):format(options.super))
         end
@@ -483,11 +482,11 @@ function ClassControl.declare(name, superOrOptions)
     -- 设置扩展类
     if options.extends then
         for _, extendsName in ipairs(options.extends) do
-            metadata:extends(extendsName.__name or extendsName --[[@as string]])
+            registry:extends(extendsName.__name or extendsName --[[@as string]])
         end
     end
 
-    return class, metadata
+    return class, registry
 end
 
 ---析构一个实例
@@ -516,50 +515,41 @@ end
 function ClassControl.extends(name, extendsName, extendsInitControl)
     name = name.__name or name ---@cast name string
     extendsName = extendsName.__name or extendsName ---@cast extendsName string
-    getMetadata(name):extends(extendsName, extendsInitControl)
+    getRegistry(name):extends(extendsName, extendsInitControl)
 end
 
 do
-    ---@type table<string, { version: integer, chain: table<string, boolean> }>
-    local inheritanceChains = {}
-    local inheritanceVersion = 0
-
     ---@param className string
-    ---@return table<string, boolean>
-    local function buildInheritanceChain(className)
-        local entry = inheritanceChains[className]
-        if entry and entry.version == inheritanceVersion then
-            return entry.chain
+    ---@param targetName string
+    ---@param visited table<string, boolean>
+    ---@return boolean
+    local function isSubclassOf(className, targetName, visited)
+        if className == targetName then
+            return true
+        end
+        if visited[className] then
+            return false
+        end
+        visited[className] = true
+
+        local config = _classRegistryMap[className]
+        if not config or not config.extendsMap then
+            return false
         end
 
-        local chain = { [className] = true }
-        if not entry then
-            entry = { version = inheritanceVersion, chain = chain }
-            inheritanceChains[className] = entry
-        else
-            entry.version = inheritanceVersion
-            entry.chain = chain
-        end
-
-        local config = _classConfigMap[className]
-
-        if config then
-            if config.extendsMap then
-                for extendName in pairs(config.extendsMap) do
-                    local extendChain = buildInheritanceChain(extendName)
-                    for parentName in pairs(extendChain) do
-                        chain[parentName] = true
-                    end
-                end
+        for extendName in pairs(config.extendsMap) do
+            if isSubclassOf(extendName, targetName, visited) then
+                return true
             end
         end
 
-        return chain
+        return false
     end
 
     --- 检查对象是否为指定类或其子类的实例.
+    ---@generic T: Object
     ---@param obj Object 要判断的实例.
-    ---@param targetName string|Object 目标类名或目标类对象. 可以是类名或类对象.
+    ---@param targetName `T`|Object 目标类名或目标类对象. 可以是类名或类对象.
     ---@return boolean
     function ClassControl.instanceof(obj, targetName)
         if type(obj) ~= 'table' or (not obj.__class__) then
@@ -574,13 +564,7 @@ do
             end
         end
 
-        local chain = buildInheritanceChain(obj.__class__)
-        return chain[targetName] == true
-    end
-
-    ---@private
-    function ClassMetadata.increaseInheritanceVersion()
-        inheritanceVersion = inheritanceVersion + 1
+        return isSubclassOf(obj.__class__, targetName, {})
     end
 end
 
@@ -600,7 +584,7 @@ function ClassControl.refreshInheritance(parentClass)
         return
     end
 
-    for childName, childConfig in pairs(_classConfigMap) do
+    for childName, childConfig in pairs(_classRegistryMap) do
         if childConfig.extendsMap and childConfig.extendsMap[parentName] then
             local childClass = _classMap[childName]
             if childClass then
@@ -627,13 +611,13 @@ do
         if not name then
             _errorHandler('super() 调用失败, 没有找到实例的类名')
         end
-        local metadata = getMetadata(name)
-        local superClass = metadata and metadata.superClass
-        if not superClass then
+        local metadata = getRegistry(name)
+        local super = metadata and metadata.super
+        if not super then
             _errorHandler(('super() 调用失败, 没有找到父类 %q'):format(name))
         end
-        ---@cast superClass -?
-        local superName = superClass.__name
+        ---@cast super -?
+        local superName = super.__name
         return setmetatable({
             instance,
             superName,
@@ -650,7 +634,7 @@ end
 ---获取一个类
 ---@generic T
 ---@param name `T`
----@return Class.Definition
+---@return Class.Type
 function ClassControl.get(name)
     return _classMap[name]
 end
@@ -675,5 +659,5 @@ function ClassControl.type(obj)
     return obj.__class__
 end
 
-ClassControl.getMetadata = getMetadata
+ClassControl.getRegistry = getRegistry
 return ClassControl
